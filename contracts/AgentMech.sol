@@ -17,10 +17,8 @@ error ZeroAddress();
 /// @param agentId Agent Id.
 error AgentNotFound(uint256 agentId);
 
-/// @dev Not enough value paid.
-/// @param provided Provided amount.
-/// @param expected Expected amount.
-error NotEnoughPaid(uint256 provided, uint256 expected);
+/// User does not have credits for this subscription
+error NotEnoughCredits();
 
 /// @dev Request Id not found.
 /// @param requestId Request Id.
@@ -36,23 +34,35 @@ error Overflow(uint256 provided, uint256 max);
 contract AgentMech is ERC721Mech {
     event Deliver(address indexed sender, uint256 requestId, bytes data);
     event Request(address indexed sender, uint256 requestId, bytes data);
-    event PriceUpdated(uint256 price);
+    event SubscriptionUpdated(address subscriptionNFTAddress);
 
     // Minimum required price
     uint256 public price;
     // Number of undelivered requests
     uint256 public numUndeliveredRequests;
 
+    // subscription nft
+    IERC1155 private subscriptionNFT;
+    // token id
+    uint256 private subscriptionTokenId;
+
     // Map of requests counts for corresponding addresses
-    mapping (address => uint256) public mapRequestsCounts;
+    mapping(address => uint256) public mapRequestsCounts;
     // Map of request Ids
-    mapping (uint256 => uint256[2]) public mapRequestIds;
+    mapping(uint256 => uint256[2]) public mapRequestIds;
+    // Map requestIds to requester address
+    mapping(uint256 => address) private mapRequestAddresses;
 
     /// @dev AgentMech constructor.
     /// @param _token Address of the token contract.
     /// @param _tokenId The token ID.
-    /// @param _price The minimum required price.
-    constructor(address _token, uint256 _tokenId, uint256 _price) ERC721Mech(_token, _tokenId) {
+    /// @param _subscriptionNFTAddress The address of the subscription.
+    constructor(
+        address _token,
+        uint256 _tokenId,
+        address _subscriptionNFTAddress,
+        uint256 _subscriptionTokenId
+    ) ERC721Mech(_token, _tokenId) {
         // Check for the token address
         if (_token == address(0)) {
             revert ZeroAddress();
@@ -64,21 +74,23 @@ contract AgentMech is ERC721Mech {
             revert AgentNotFound(_tokenId);
         }
 
-        // Record the price
-        price = _price;
+        // Set the subscription for this agent
+        subscriptionNFT = IERC1155(_subscriptionNFTAddress);
+        subscriptionTokenId = _subscriptionTokenId;
     }
 
     /// @dev Registers a request.
     /// @param data Self-descriptive opaque data-blob.
     function request(bytes memory data) external payable returns (uint256 requestId) {
-        if (msg.value < price) {
-            revert NotEnoughPaid(msg.value, price);
+        if (subscriptionNFT.balanceOf(msg.sender, subscrptionTokenId) < 1) {
+            revert NotEnoughCredits();
         }
 
         // Get the request Id
         requestId = getRequestId(msg.sender, data);
         // Increase the requests count supplied by the sender
         mapRequestsCounts[msg.sender]++;
+        mapRequestAddresses[requestId] = msg.sender;
 
         // Record the request Id in the map
         // Get previous and next request Ids of the first element
@@ -120,14 +132,21 @@ contract AgentMech is ERC721Mech {
         // Decrease the number of undelivered requests
         numUndeliveredRequests--;
 
+        // burn the credits upon delivery
+        subscriptionNFT.burn(
+            mapRequestAddresses[requestId],
+            subscrptionTokenId,
+            1
+        );
+
         emit Deliver(msg.sender, requestId, data);
     }
 
-    /// @dev Sets the new price.
-    /// @param newPrice New mimimum required price.
-    function setPrice(uint256 newPrice) external onlyOperator {
-        price = newPrice;
-        emit PriceUpdated(newPrice);
+    /// @dev Sets the new subscription.
+    /// @param subscriptionNFTAddress Address of the nft subscription.
+    function setSubscription(address subscriptionNFTAddress) external onlyOperator {
+        subscriptionNFT = IERC1155(subscriptionNFTAddress);
+        emit SubscriptionUpdated(subscriptionNFTAddress);
     }
 
     /// @dev Gets the request Id.
